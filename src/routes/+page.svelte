@@ -1,136 +1,147 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  type ServerConfig = { base_url: string; api_key: string | null };
+  type ValidateResponse = { approved: boolean; status: string };
+  type HealthResponse = {
+    db_connected: boolean;
+    last_index_tick_at: string | null;
+    last_option_tick_at: string | null;
+    aggregation_watermarks: unknown;
+    session_mode: string;
+  };
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  let username = $state("");
+  let serverConfig = $state<ServerConfig | null>(null);
+  let validateResult = $state<ValidateResponse | null>(null);
+  let healthResult = $state<HealthResponse | null>(null);
+  let statusMsg = $state("");
+  let loading = $state(false);
+
+  async function loadConfig() {
+    serverConfig = await invoke<ServerConfig>("get_server_config");
   }
+
+  async function register() {
+    loading = true;
+    statusMsg = "";
+    try {
+      const res = await invoke<{ status: string; api_key: string }>("register_client", { username });
+      statusMsg = `Registered. Status: ${res.status}`;
+      await loadConfig();
+    } catch (e) {
+      statusMsg = `Error: ${e}`;
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function validate() {
+    loading = true;
+    statusMsg = "";
+    try {
+      validateResult = await invoke<ValidateResponse>("validate_client");
+    } catch (e) {
+      statusMsg = `Error: ${e}`;
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function checkHealth() {
+    loading = true;
+    statusMsg = "";
+    try {
+      healthResult = await invoke<HealthResponse>("server_health");
+    } catch (e) {
+      statusMsg = `Error: ${e}`;
+    } finally {
+      loading = false;
+    }
+  }
+
+  loadConfig();
 </script>
 
 <main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+  <h1>kstocks</h1>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
+  {#if serverConfig}
+    <p class="muted">Server: {serverConfig.base_url}</p>
+    <p class="muted">API key: {serverConfig.api_key ? "stored" : "not registered yet"}</p>
+  {/if}
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
+  <section>
+    <h2>Register</h2>
+    <form class="row" onsubmit={(e) => { e.preventDefault(); register(); }}>
+      <input placeholder="username" bind:value={username} />
+      <button type="submit" disabled={loading}>Register</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Validate</h2>
+    <button onclick={validate} disabled={loading}>Check approval status</button>
+    {#if validateResult}
+      <p>approved: {validateResult.approved} · status: {validateResult.status}</p>
+    {/if}
+  </section>
+
+  <section>
+    <h2>Server health</h2>
+    <button onclick={checkHealth} disabled={loading}>Check health</button>
+    {#if healthResult}
+      <p>db_connected: {healthResult.db_connected} · session: {healthResult.session_mode}</p>
+    {/if}
+  </section>
+
+  {#if statusMsg}
+    <p class="status">{statusMsg}</p>
+  {/if}
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
   color: #0f0f0f;
   background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
 .container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 4vh 1.5rem;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+section {
+  margin-top: 2rem;
+  text-align: left;
 }
 
 .row {
   display: flex;
-  justify-content: center;
+  gap: 0.5rem;
 }
 
-a {
+.muted {
+  color: #666;
+  font-size: 0.9em;
+}
+
+.status {
+  margin-top: 1rem;
   font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
 }
 
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
+input, button {
   border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
+  border: 1px solid #ccc;
+  padding: 0.5em 1em;
   font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
 }
 
 button {
   cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -138,19 +149,10 @@ button {
     color: #f6f6f6;
     background-color: #2f2f2f;
   }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
+  input, button {
+    color: #fff;
     background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
+    border-color: #444;
   }
 }
-
 </style>
