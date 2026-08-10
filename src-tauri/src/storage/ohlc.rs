@@ -10,9 +10,50 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use tracing::{error, info};
+
+/// One OHLC bar, as read back for chart rendering. Shared shape for both
+/// the 1-minute and 1-day tiers (frontend picks which to request).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct OhlcBar {
+    pub bucket_start: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub tick_count: i64,
+}
+
+/// Read the most recent `limit` bars for `index_name` from the local
+/// `index_ohlc_1m` table, oldest-first (chart-ready order). This is the
+/// fast, offline-capable read path for widget charts; `fetch_index_ohlc`
+/// (REST) remains available for explicit historical backfill.
+pub async fn recent_index_bars(
+    pool: &SqlitePool,
+    index_name: &str,
+    interval: &str,
+    limit: i64,
+) -> Result<Vec<OhlcBar>> {
+    const SELECT_1M: &str = "SELECT bucket_start, open, high, low, close, tick_count FROM index_ohlc_1m \
+         WHERE index_name = ? ORDER BY bucket_start DESC LIMIT ?";
+    const SELECT_1D: &str = "SELECT bucket_start, open, high, low, close, tick_count FROM index_ohlc_1d \
+         WHERE index_name = ? ORDER BY bucket_start DESC LIMIT ?";
+
+    let sql: &'static str = match interval {
+        "1d" => SELECT_1D,
+        _ => SELECT_1M,
+    };
+    let mut rows = sqlx::query_as::<_, OhlcBar>(sql)
+        .bind(index_name)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    rows.reverse();
+    Ok(rows)
+}
 
 const INDEX_1M_TABLE: &str = "index_ohlc_1m";
 const OPTION_1M_TABLE: &str = "option_ohlc_1m";

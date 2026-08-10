@@ -1,5 +1,85 @@
 # kstocks_client — Progress
 
+## Latest pass — frontend restructure + API key fix
+
+**Not compiled/built** (per instructions, `cargo check`/`cargo build` and
+`pnpm install`/`pnpm tauri dev` were intentionally left for manual run).
+Treat as a careful desk-check.
+
+### Fixed: API key was visible in the UI
+- `commands::server::get_server_config` used to return the raw
+  `ServerConfig` (including `api_key: Option<String>`) straight to the
+  frontend, and the old single-page UI printed "API key: stored" but the
+  value was sitting in reactive state and Tauri IPC in plaintext.
+- Now returns a new `ServerConfigView { base_url, has_api_key }` —
+  the key itself never crosses the IPC boundary after registration.
+- `register_client` still returns the key once (`RegisterResponse.api_key`,
+  unchanged, required so the user can see/copy it at all). The new
+  `/register` route holds it in a route-local `$state` only, shows it in a
+  one-time "acknowledge and hide" panel, and never stores it in any shared
+  store or persists it client-side.
+- Added `clear_api_key` command ("forget API key" / re-register flow).
+
+### Backend additions (`src-tauri/src/`)
+- `commands/app_settings.rs` — `get_setting`/`set_setting`, exposing the
+  already-existing (but previously unwired) `storage/settings_store.rs`
+  get/set. Used by the frontend for theme + dashboard layout persistence.
+- `commands/market_data.rs` — `get_recent_index_bars(symbol, interval,
+  limit)`, backed by a new `storage::ohlc::recent_index_bars()` query
+  (new `OhlcBar` struct). Reads straight from the locally-populated
+  `index_ohlc_1m` / `index_ohlc_1d` tables — fast, offline-capable, no
+  network round-trip — as the read path for chart widgets. The existing
+  REST `fetch_index_ohlc` remains for explicit historical backfill.
+- `commands::server::clear_api_key` (see above).
+- All four new commands registered in `lib.rs`'s `invoke_handler!`.
+
+### Frontend: monolith → routes + components + runes
+Previously a single `+page.svelte` with inline `<style>`. Now:
+
+- **Routes** (`src/routes/`):
+  - `/` — redirects to `/dashboard` or `/register` based on whether an
+    API key is stored.
+  - `/register` — server URL config, register, one-time key reveal,
+    validate/health checks. (Was the API-key leak; now fixed here.)
+  - `/dashboard` — the widget grid.
+  - `+layout.svelte` — global stylesheet import, theme/widgets/auth init
+    on mount, shared `Nav`.
+- **Stores** (`src/lib/stores/`, Svelte 5 runes, module-level `$state`
+  singletons):
+  - `theme.svelte.ts` — light/dark, persisted via `app_settings`,
+    applied as `data-theme` on `<html>`.
+  - `auth.svelte.ts` — `hasApiKey` / approval `status` only, never the
+    key itself.
+  - `widgets.svelte.ts` — list of dashboard chart widgets (`{id, symbol,
+    interval}`), persisted as one JSON blob under `app_settings` key
+    `ui.dashboard_widgets`. `addWidget` / `removeWidget` / `updateWidget`.
+- **API layer** (`src/lib/api/tauri.ts`) — typed wrapper around every
+  `invoke(...)` call, one function per Tauri command, matching
+  `src-tauri/src/commands/*` 1:1. Components no longer call `invoke`
+  directly.
+- **Components** (`src/lib/components/`):
+  - `Chart.svelte` — dependency-free canvas candlestick renderer (no new
+    npm packages added, so nothing to `pnpm install` for this pass).
+  - `Widget.svelte` — one dashboard tile: header (symbol/interval picker,
+    remove button, last price + % change) + `Chart`, polls
+    `get_recent_index_bars` every 15s.
+  - `WidgetGrid.svelte` — CSS grid of `Widget`s + "add widget" button,
+    reads/writes the `widgets` store.
+  - `SymbolPicker.svelte` — symbol + interval `<select>`s (symbol list is
+    currently a hardcoded placeholder — see Not done).
+  - `Nav.svelte`, `ThemeToggle.svelte` — shared chrome.
+- **Styles** (`src/styles/`) — pulled out of components entirely:
+  - `variables.css` — theme tokens as CSS custom properties, `:root`/
+    `[data-theme="light"]` vs `[data-theme="dark"]`.
+  - `global.css` — base element styles + a few reusable utility classes
+    (`.card`, `.stack`, `.row`, `.error-banner`, etc.), imported once in
+    `+layout.svelte`. Components use these tokens/utilities; only
+    layout-specific CSS stays in each component's `<style>` block.
+- `types.ts` — TS types mirroring every Rust command payload by hand (no
+  codegen yet — see Not done).
+
+
+
 Client repo: https://github.com/rrstar2345/kstocks_client
 Server repo (reused for patterns/API contract): https://github.com/rrstar2345/kstocks-server
 
@@ -88,41 +168,49 @@ Added to match server where the client needs the same capability:
 
 ## Not done / next pass
 
-1. **Compile it.** Nothing in this pass has been built. Run `cargo build`
-   in `src-tauri/`, fix whatever surfaces (likely candidates: sqlx offline
-   mode / `DATABASE_URL` for compile-time macros — this uses runtime
-   `query`/`query_as`, not `query!`, specifically to avoid needing a
-   pre-existing DB at compile time, but double-check), then `pnpm install`
-   + `pnpm tauri dev` for the full app.
-2. **Frontend for watchlists / paper trades.** Commands exist
-   (`list_watchlists`, `create_watchlist`, `add_watchlist_item`,
-   `open_paper_trade`, `list_paper_trades`, etc.) but no Svelte UI calls
-   them yet.
-3. **`app_settings` store has no commands.** `storage/settings_store.rs`
-   (`get`/`set`) isn't exposed via `#[tauri::command]` yet — add when the
-   UI needs its first persisted preference (theme, last workspace, etc.).
-4. **Layouts table is unused.** Schema exists; no queries module, no
-   commands, no UI. Wire up once the chart/workspace layout system exists.
-5. **No live market data path yet.** Per `CONTEXT.md`, the desktop app is
-   expected to connect directly to NSE's WSS for live/in-progress candles
-   (the server API only serves closed historical bars for gap-fill). None
-   of the Market Data Engine / WebSocket Manager / event bus from
-   `CONTEXT.md`'s architecture list exists yet — this pass only covers the
-   historical/REST side (`/ohlc/*`) and local persistence.
-6. **No Broker Adapter Layer, Order Manager, Strategy Engine, Indicator
-   Engine, Chart Engine, or Plugin System** — all still just names in
-   `CONTEXT.md`. Foundation (storage + API client + Tauri command pattern)
-   is now in place for these to build on.
-7. **`/register` UX gap.** After registering, the account is `pending`
-   until an admin approves it server-side (see server README's admin CLI).
-   The current UI shows raw status but doesn't poll `/validate` or guide
-   the user through waiting for approval.
-8. **Server URL is not yet user-editable in the UI.** `set_server_url`
-   command exists (for switching from `localhost:8787` to a deployed IP)
-   but there's no settings screen calling it.
-9. **No tests.** Neither the server nor this client pass has any.
-10. **No error/loading state polish** in the Svelte page beyond a single
-    shared `statusMsg`/`loading` — fine for a smoke test, not production UI.
+1. **Compile/build it.** Nothing in this pass has been built — neither the
+   Rust changes nor the frontend. Run `cargo build` in `src-tauri/`
+   (existing sqlx runtime-query approach unchanged, no new compile-time
+   macro usage added), then `pnpm install` + `pnpm tauri dev`. The
+   `SvelteKit` route restructure (new `/register`, `/dashboard` dirs) and
+   the rune stores (`*.svelte.ts` files) are new surface area most likely
+   to need small fixes on first build (e.g. `$app/stores`/`$app/navigation`
+   import paths, `crypto.randomUUID()` availability in the Tauri webview).
+2. **Frontend for watchlists / paper trades still missing.** Commands
+   exist (`list_watchlists`, `create_watchlist`, `open_paper_trade`,
+   `list_paper_trades`, etc.) and now have typed wrappers in
+   `src/lib/api/tauri.ts`, but no route/component calls them yet. Natural
+   next screens: a watchlist sidebar feeding `SymbolPicker`, and a paper
+   trades panel/route.
+3. **`SymbolPicker` symbol list is hardcoded.** Replace the placeholder
+   `KNOWN_SYMBOLS` array with a real source once watchlists (above) or a
+   symbols endpoint is wired in.
+4. **Layouts table (`layouts`) is still unused.** The new
+   `ui.dashboard_widgets` app_settings blob covers "which widgets, which
+   symbols" for now; migrate to the `layouts` table if/when multiple named
+   named/saved workspaces (not just one dashboard) are needed.
+5. **No live market data push to the frontend yet.** `Widget.svelte`
+   currently polls `get_recent_index_bars` every 15s — it reads whatever
+   the backend's streamers have already aggregated into
+   `index_ohlc_1m`/`1d` locally. No Tauri event-based push (`emit`/
+   `listen`) from the Rust streamers to the frontend yet, so widgets are
+   not truly real-time between polls. Wiring `app.emit()` on new bars +
+   a `listen()` in `Widget.svelte` is the natural next step for low
+   latency.
+6. **Only index bars are chart-able.** `get_recent_index_bars` reads
+   `index_ohlc_1m`/`1d` only; there's no equivalent local read command for
+   `option_ohlc_1m`, so widgets can't yet chart individual option legs.
+7. **No Broker Adapter Layer, Order Manager, Strategy Engine, Indicator
+   Engine, or Plugin System** — still just names in `CONTEXT.md`.
+8. **No tests.** Neither the server nor this client pass has any.
+9. **`Chart.svelte` is intentionally minimal** — no zoom/pan, no overlays/
+   indicators, no crosshair sync across widgets, no drawing tools. It's a
+   dependency-free candlestick canvas so this pass didn't need any new
+   npm installs; swap in a real charting engine (per `CONTEXT.md`'s Chart
+   Engine requirement) when that becomes the priority.
+10. **Types are hand-mirrored, not generated.** `src/lib/types.ts` matches
+    the Rust command payloads by hand. Consider `specta`/`tauri-specta` or
+    similar if drift becomes a problem.
 
 ## Useful references for next pass
 - `kstocks-server/README.md` — full API contract (request/response shapes,

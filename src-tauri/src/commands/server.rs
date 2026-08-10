@@ -90,10 +90,38 @@ pub async fn set_server_url(state: State<'_, AppState>, base_url: String) -> Res
     Ok(())
 }
 
+/// Sanitized view of the server config for the UI: the API key itself is
+/// never sent to the frontend after registration (it's shown exactly once,
+/// at the moment `register_client` returns it) — only whether one is
+/// stored, so screens can render "connected" state without handling
+/// secret material.
+#[derive(serde::Serialize)]
+pub struct ServerConfigView {
+    pub base_url: String,
+    pub has_api_key: bool,
+}
+
 #[tauri::command]
-pub async fn get_server_config(
-    state: State<'_, AppState>,
-) -> Result<crate::settings::ServerConfig, String> {
+pub async fn get_server_config(state: State<'_, AppState>) -> Result<ServerConfigView, String> {
     let config = state.config.read().await;
-    Ok(config.server.clone())
+    Ok(ServerConfigView {
+        base_url: config.server.base_url.clone(),
+        has_api_key: config.server.api_key.is_some(),
+    })
+}
+
+/// Clear the stored API key (e.g. "log out" / "re-register"). Does not
+/// touch `base_url`.
+#[tauri::command]
+pub async fn clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut config = state.config.write().await;
+        config.server.api_key = None;
+        save_config(&state.paths, &config).map_err(|e| e.to_string())?;
+    }
+    {
+        let mut client = state.api_client.write().await;
+        client.set_api_key(None);
+    }
+    Ok(())
 }
