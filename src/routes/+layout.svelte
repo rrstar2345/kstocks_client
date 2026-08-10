@@ -26,7 +26,6 @@
 
 <style>
   .app-main {
-    max-width: 1400px;
     margin: 0 auto;
     padding: var(--space-5);
   }

@@ -26,7 +26,7 @@
 <style>
   .home-layout {
     display: grid;
-    grid-template-columns: 260px minmax(0, 1fr) 300px;
+    grid-template-columns: 300px minmax(0, 1fr) 300px;
     gap: var(--space-4);
     height: calc(100vh - 130px);
     min-height: 480px;
