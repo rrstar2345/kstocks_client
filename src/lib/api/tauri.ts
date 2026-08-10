@@ -6,7 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ChartInterval,
   HealthResponse,
+  IndexSnapshot,
   OhlcBar,
+  OptionChainRow,
+  OptionLeg,
+  OptionLegBar,
   PaperTrade,
   RegisterResponse,
   ServerConfigView,
@@ -72,6 +76,40 @@ export function getRecentIndexBars(
   limit = 200
 ): Promise<OhlcBar[]> {
   return invoke("get_recent_index_bars", { symbol, interval, limit });
+}
+
+export function getRecentOptionBars(
+  symbol: string,
+  expiry: string,
+  strike: number,
+  leg: OptionLeg,
+  limit = 200
+): Promise<OptionLegBar[]> {
+  return invoke("get_recent_option_bars", { symbol, expiry, strike, leg, limit });
+}
+
+export function listOptionSymbols(): Promise<string[]> {
+  return invoke("list_option_symbols");
+}
+
+export function listOptionExpiries(symbol: string): Promise<string[]> {
+  return invoke("list_option_expiries", { symbol });
+}
+
+export function listOptionStrikes(symbol: string, expiry: string): Promise<number[]> {
+  return invoke("list_option_strikes", { symbol, expiry });
+}
+
+export function getOptionChain(symbol: string, expiry: string): Promise<OptionChainRow[]> {
+  return invoke("get_option_chain", { symbol, expiry });
+}
+
+export function getAllIndexSnapshots(): Promise<IndexSnapshot[]> {
+  return invoke("get_all_index_snapshots");
+}
+
+export function getIndexSnapshot(symbol: string): Promise<IndexSnapshot | null> {
+  return invoke("get_index_snapshot", { symbol });
 }
 
 // ---- watchlists.rs -----------------------------------------------------

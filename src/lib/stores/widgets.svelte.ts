@@ -8,9 +8,20 @@ import { getSetting, setSetting } from "$lib/api/tauri";
 import type { ChartWidgetConfig } from "$lib/types";
 
 const STORAGE_KEY = "ui.dashboard_widgets";
+/** Grid positions: w1) left-top, w2) left-bottom, w3) right-bottom,
+ * w4) right-top. Order in the array == this fixed slot order; adding a
+ * widget appends the next slot, removing compacts the remaining ones
+ * back into slots 1..n so the layout rules (w1..w4) always apply to
+ * however many widgets currently exist. */
+export const MAX_WIDGETS = 4;
 
 const DEFAULT_WIDGETS: ChartWidgetConfig[] = [
-  { id: crypto.randomUUID(), symbol: "NIFTY", interval: "1m" },
+  {
+    id: crypto.randomUUID(),
+    view: "chart",
+    selection: { kind: "index", symbol: "NIFTY" },
+    interval: "1m",
+  },
 ];
 
 let widgets = $state<ChartWidgetConfig[]>([]);
@@ -36,8 +47,17 @@ export async function initWidgets(): Promise<void> {
   }
 }
 
-export function addWidget(symbol: string, interval: ChartWidgetConfig["interval"] = "1m"): void {
-  widgets = [...widgets, { id: crypto.randomUUID(), symbol, interval }];
+export function addWidget(): void {
+  if (widgets.length >= MAX_WIDGETS) return;
+  widgets = [
+    ...widgets,
+    {
+      id: crypto.randomUUID(),
+      view: "chart",
+      selection: { kind: "index", symbol: "NIFTY" },
+      interval: "1m",
+    },
+  ];
   void persist();
 }
 
@@ -54,5 +74,8 @@ export function updateWidget(id: string, patch: Partial<Omit<ChartWidgetConfig, 
 export const widgetsStore = {
   get list() {
     return widgets;
+  },
+  get canAdd() {
+    return widgets.length < MAX_WIDGETS;
   },
 };

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { authStore, refreshServerConfig } from "$lib/stores/auth.svelte";
 
-  onMount(async () => {
-    await refreshServerConfig();
-    goto(authStore.hasApiKey ? "/dashboard" : "/register");
+  // Home is available regardless of registration status — unregistered
+  // users still get live NSE data locally; registered users additionally
+  // get server-side backfill. So there's nothing to branch on here.
+  onMount(() => {
+    goto("/home");
   });
 </script>
 

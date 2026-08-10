@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { initTheme } from "$lib/stores/theme.svelte";
   import { initWidgets } from "$lib/stores/widgets.svelte";
-  import { refreshServerConfig, refreshValidation } from "$lib/stores/auth.svelte";
+  import { loadUsername, refreshServerConfig, refreshValidation } from "$lib/stores/auth.svelte";
   import Nav from "$lib/components/Nav.svelte";
 
   let { children } = $props();
@@ -11,7 +11,10 @@
   onMount(async () => {
     await initTheme();
     await initWidgets();
+    await loadUsername();
     await refreshServerConfig();
+    // Validation is never user-triggered — it always runs automatically
+    // once, here, on app start.
     await refreshValidation();
   });
 </script>
@@ -23,7 +26,7 @@
 
 <style>
   .app-main {
-    max-width: 1100px;
+    max-width: 1400px;
     margin: 0 auto;
     padding: var(--space-5);
   }

@@ -17,6 +17,7 @@ pub mod ticks;
 pub mod watchlists;
 
 pub use db::init_pool;
+pub use ohlc::ohlc_expiry_date_str;
 pub use ticks::{
     start_index_tick_writer, start_option_tick_writer, IndexTickRow, IndexTickSender,
     OptionTickRow, OptionTickSender,

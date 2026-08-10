@@ -67,9 +67,56 @@ export type Theme = "light" | "dark";
 
 export type ChartInterval = "1m" | "1d";
 
-/** A single chart widget on the dashboard: its own symbol + interval. */
+export type OptionLeg = "CE" | "PE";
+
+export type OptionLegBar = {
+  bucket_start: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  tick_count: number;
+};
+
+export type OptionChainRow = {
+  strike_price: number;
+  ce_close: number | null;
+  ce_volume: number | null;
+  ce_oi_close: number | null;
+  pe_close: number | null;
+  pe_volume: number | null;
+  pe_oi_close: number | null;
+};
+
+export type IndexSnapshot = {
+  index_name: string;
+  current_price: number | null;
+  change: number | null;
+  per_change: number | null;
+  open: number | null;
+  low: number | null;
+  high: number | null;
+  previous_close: number | null;
+  time: string;
+};
+
+/** What a widget/list-view is currently showing: an index, or one leg of
+ * a specific option-chain contract. */
+export type InstrumentSelection =
+  | { kind: "index"; symbol: string }
+  | { kind: "option"; symbol: string; expiry: string; strike: number; leg: OptionLeg };
+
+/** Which visual a widget currently renders: candlestick chart, or a
+ * tabular/list view (option chain table, or index watch-style row). */
+export type WidgetView = "chart" | "list";
+
+/** A single dashboard widget: its view mode + what instrument it targets.
+ * `interval` only applies in chart mode. */
 export type ChartWidgetConfig = {
   id: string;
-  symbol: string;
+  view: WidgetView;
+  selection: InstrumentSelection;
   interval: ChartInterval;
 };
+
+export type TradingMode = "paper" | "live";

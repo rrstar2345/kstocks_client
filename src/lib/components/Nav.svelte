@@ -1,12 +1,35 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { authStore } from "$lib/stores/auth.svelte";
+  import { serverHealth } from "$lib/api/tauri";
   import ThemeToggle from "./ThemeToggle.svelte";
 
   const links = [
-    { href: "/dashboard", label: "Dashboard" },
-    { href: "/register", label: "Connection" },
+    { href: "/home", label: "Home" },
+    { href: "/settings", label: "Settings" },
   ];
+
+  // Server health is display-only chrome, shown here in the nav rather
+  // than as an action on the Settings page. Polled quietly; failures just
+  // mean "server unreachable", which is a normal, non-fatal state — the
+  // app still works fully on local NSE data.
+  let serverUp = $state(false);
+
+  async function pollHealth() {
+    try {
+      await serverHealth();
+      serverUp = true;
+    } catch {
+      serverUp = false;
+    }
+  }
+
+  onMount(() => {
+    pollHealth();
+    const timer = setInterval(pollHealth, 30_000);
+    return () => clearInterval(timer);
+  });
 </script>
 
 <nav>
@@ -17,7 +40,12 @@
     {/each}
   </div>
   <div class="right">
-    <span class="status-dot" class:ready={authStore.isReady} title={authStore.status}></span>
+    <span
+      class="status-dot"
+      class:ready={serverUp}
+      title={serverUp ? "Server reachable" : "Server unreachable — using local data only"}
+    ></span>
+    <span class="status-dot" class:ready={authStore.isReady} title={`Account: ${authStore.status}`}></span>
     <ThemeToggle />
   </div>
 </nav>

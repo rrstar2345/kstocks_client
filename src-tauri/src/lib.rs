@@ -151,8 +151,14 @@ pub fn run() {
                     // watchlists once that UI exists, rather than a fixed
                     // set. See PROGRESS.md.
                     let default_symbols = vec!["NIFTY".to_string(), "BANKNIFTY".to_string()];
+                    let option_backfill_client = api_client.clone();
+                    let option_backfill_db = db.clone();
                     tokio::spawn(async move {
                         storage::backfill::run_startup_backfill(&api_client, &backfill_db, &default_symbols).await;
+                        // Option backfill runs after index backfill so it
+                        // reads from whatever symbols/expiries/strikes the
+                        // local streamers have already started populating.
+                        storage::backfill::run_startup_option_backfill(&option_backfill_client, &option_backfill_db).await;
                     });
                 } else {
                     warn!("No API key stored yet; skipping startup backfill until registration completes.");
@@ -177,6 +183,13 @@ pub fn run() {
             commands::app_settings::get_setting,
             commands::app_settings::set_setting,
             commands::market_data::get_recent_index_bars,
+            commands::market_data::get_recent_option_bars,
+            commands::market_data::list_option_symbols,
+            commands::market_data::list_option_expiries,
+            commands::market_data::list_option_strikes,
+            commands::market_data::get_option_chain,
+            commands::market_data::get_all_index_snapshots,
+            commands::market_data::get_index_snapshot,
             commands::watchlists::list_watchlists,
             commands::watchlists::create_watchlist,
             commands::watchlists::delete_watchlist,

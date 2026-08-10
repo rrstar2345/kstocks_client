@@ -55,6 +55,183 @@ pub async fn recent_index_bars(
     Ok(rows)
 }
 
+/// One OHLC bar for an option leg (CE or PE), as read back for chart
+/// rendering — same shared shape idea as `OhlcBar` but scoped to a single
+/// leg (the frontend picks CE or PE when building the chart request).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct OptionLegBar {
+    pub bucket_start: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub tick_count: i64,
+}
+
+/// Read the most recent `limit` bars for one option leg (CE or PE) of a
+/// specific symbol/expiry/strike from the local `option_ohlc_1m` table,
+/// oldest-first. Fast, offline-capable read path for option chart widgets.
+pub async fn recent_option_bars(
+    pool: &SqlitePool,
+    symbol: &str,
+    expiry: &str,
+    strike: f64,
+    leg: &str,
+    limit: i64,
+) -> Result<Vec<OptionLegBar>> {
+    let sql = match leg {
+        "PE" | "pe" => {
+            "SELECT bucket_start, pe_open AS open, pe_high AS high, pe_low AS low, pe_close AS close, tick_count \
+             FROM option_ohlc_1m WHERE symbol = ? AND expiry = ? AND strike_price = ? AND pe_close IS NOT NULL \
+             ORDER BY bucket_start DESC LIMIT ?"
+        }
+        _ => {
+            "SELECT bucket_start, ce_open AS open, ce_high AS high, ce_low AS low, ce_close AS close, tick_count \
+             FROM option_ohlc_1m WHERE symbol = ? AND expiry = ? AND strike_price = ? AND ce_close IS NOT NULL \
+             ORDER BY bucket_start DESC LIMIT ?"
+        }
+    };
+    let mut rows = sqlx::query_as::<_, OptionLegBar>(sql)
+        .bind(symbol)
+        .bind(expiry)
+        .bind(strike)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    rows.reverse();
+    Ok(rows)
+}
+
+/// Distinct symbols with any option data available locally (from
+/// `option_ticks`, so it reflects what's actually being streamed).
+pub async fn list_option_symbols(pool: &SqlitePool) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT DISTINCT symbol FROM option_ticks ORDER BY symbol")
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(|r| Ok(r.try_get::<String, _>("symbol")?)).collect()
+}
+
+/// Distinct expiries available locally for a given symbol, nearest first.
+pub async fn list_option_expiries(pool: &SqlitePool, symbol: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT expiry, expiry_date FROM option_ohlc_1m WHERE symbol = ? ORDER BY expiry_date ASC",
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(|r| Ok(r.try_get::<String, _>("expiry")?)).collect()
+}
+
+/// Distinct strike prices available locally for a given symbol+expiry,
+/// ascending.
+pub async fn list_option_strikes(pool: &SqlitePool, symbol: &str, expiry: &str) -> Result<Vec<f64>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT strike_price FROM option_ohlc_1m WHERE symbol = ? AND expiry = ? ORDER BY strike_price ASC",
+    )
+    .bind(symbol)
+    .bind(expiry)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(|r| Ok(r.try_get::<f64, _>("strike_price")?)).collect()
+}
+
+/// One row of an option-chain table: a strike price with its CE (call)
+/// and PE (put) latest snapshot side by side, as read from the most
+/// recent bucket in `option_ohlc_1m` per strike.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct OptionChainRow {
+    pub strike_price: f64,
+    pub ce_close: Option<f64>,
+    pub ce_volume: Option<i64>,
+    pub ce_oi_close: Option<f64>,
+    pub pe_close: Option<f64>,
+    pub pe_volume: Option<i64>,
+    pub pe_oi_close: Option<f64>,
+}
+
+/// Latest snapshot of the whole option chain (all strikes) for a
+/// symbol+expiry, one row per strike, ascending strike order. Reads the
+/// most recent bucket per strike (not necessarily the same wall-clock
+/// bucket across strikes, since some legs tick more often than others).
+pub async fn option_chain_snapshot(
+    pool: &SqlitePool,
+    symbol: &str,
+    expiry: &str,
+) -> Result<Vec<OptionChainRow>> {
+    let rows = sqlx::query_as::<_, OptionChainRow>(
+        r#"
+        SELECT o.strike_price, o.ce_close, o.ce_volume, o.ce_oi_close,
+               o.pe_close, o.pe_volume, o.pe_oi_close
+        FROM option_ohlc_1m o
+        INNER JOIN (
+            SELECT strike_price, MAX(bucket_start) AS max_bucket
+            FROM option_ohlc_1m
+            WHERE symbol = ? AND expiry = ?
+            GROUP BY strike_price
+        ) latest
+          ON o.strike_price = latest.strike_price AND o.bucket_start = latest.max_bucket
+        WHERE o.symbol = ? AND o.expiry = ?
+        ORDER BY o.strike_price ASC
+        "#,
+    )
+    .bind(symbol)
+    .bind(expiry)
+    .bind(symbol)
+    .bind(expiry)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Latest known snapshot for a single index (last tick), used by the
+/// watchlist and index list-view. Falls back gracefully to `None` if no
+/// ticks have arrived yet for this index.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct IndexSnapshot {
+    pub index_name: String,
+    pub current_price: Option<f64>,
+    pub change: Option<f64>,
+    pub per_change: Option<f64>,
+    pub open: Option<f64>,
+    pub low: Option<f64>,
+    pub high: Option<f64>,
+    pub previous_close: Option<f64>,
+    pub time: String,
+}
+
+/// Latest tick snapshot for every distinct index seen locally, most
+/// recently updated symbols reflect current price/day-range/change.
+pub async fn all_index_snapshots(pool: &SqlitePool) -> Result<Vec<IndexSnapshot>> {
+    let rows = sqlx::query_as::<_, IndexSnapshot>(
+        r#"
+        SELECT t.index_name, t.current_price, t.change, t.per_change,
+               t.open, t.low, t.high, t.previous_close, t.time
+        FROM index_ticks t
+        INNER JOIN (
+            SELECT index_name, MAX(time) AS max_time
+            FROM index_ticks
+            GROUP BY index_name
+        ) latest ON t.index_name = latest.index_name AND t.time = latest.max_time
+        ORDER BY t.index_name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Latest snapshot for a single index by name.
+pub async fn index_snapshot(pool: &SqlitePool, index_name: &str) -> Result<Option<IndexSnapshot>> {
+    let row = sqlx::query_as::<_, IndexSnapshot>(
+        "SELECT index_name, current_price, change, per_change, open, low, high, previous_close, time \
+         FROM index_ticks WHERE index_name = ? ORDER BY time DESC LIMIT 1",
+    )
+    .bind(index_name)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 const INDEX_1M_TABLE: &str = "index_ohlc_1m";
 const OPTION_1M_TABLE: &str = "option_ohlc_1m";
 const INDEX_1D_TABLE: &str = "index_ohlc_1d";
@@ -376,6 +553,10 @@ pub async fn aggregate_option_1m(pool: &SqlitePool) -> Result<()> {
 /// typically `DD-Mon-YYYY`, e.g. "25-Jul-2026") into a comparable
 /// `YYYY-MM-DD` date. Falls back to a far-future sentinel if unparseable,
 /// so a bad string never causes an early/incorrect purge.
+pub fn ohlc_expiry_date_str(expiry: &str) -> String {
+    parse_expiry_date(expiry)
+}
+
 fn parse_expiry_date(expiry: &str) -> String {
     if let Ok(d) = NaiveDate::parse_from_str(expiry, "%d-%b-%Y") {
         return d.format("%Y-%m-%d").to_string();
