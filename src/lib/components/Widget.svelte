@@ -1,6 +1,14 @@
 <script lang="ts">
   import { getOptionChain, getRecentIndexBars, getRecentOptionBars } from "$lib/api/tauri";
-  import type { ChartWidgetConfig, OhlcBar, OptionChainRow, OptionLegBar } from "$lib/types";
+  import { onIndexTick, onOptionTick } from "$lib/api/events";
+  import type {
+    ChartWidgetConfig,
+    IndexTick,
+    OhlcBar,
+    OptionChainRow,
+    OptionLegBar,
+    OptionTick,
+  } from "$lib/types";
   import Chart from "./Chart.svelte";
   import SelectionPicker from "./SelectionPicker.svelte";
   import OptionChainTable from "./OptionChainTable.svelte";
@@ -23,16 +31,23 @@
   let loading = $state(true);
   let errorMsg = $state("");
 
-  const POLL_MS = 15_000;
+  // Bumped on every selection/view/interval change so an in-flight fetch
+  // that resolves after a newer one started can detect it's stale and
+  // discard itself, instead of clobbering fresher data (or racing with a
+  // tick patch for the new selection landing on the old bars array).
+  let loadToken = 0;
 
-  async function loadChart() {
+  async function loadChart(token: number) {
     loading = true;
     errorMsg = "";
     try {
-      if (config.selection.kind === "index") {
-        bars = await getRecentIndexBars(config.selection.symbol, config.interval, 200);
+      let next: OhlcBar[] | OptionLegBar[];
+      if (!config.selection) {
+        next = [];
+      } else if (config.selection.kind === "index") {
+        next = await getRecentIndexBars(config.selection.symbol, config.interval, 200);
       } else if (config.selection.expiry && config.selection.strike) {
-        bars = await getRecentOptionBars(
+        next = await getRecentOptionBars(
           config.selection.symbol,
           config.selection.expiry,
           config.selection.strike,
@@ -40,38 +55,116 @@
           200
         );
       } else {
-        bars = [];
+        next = [];
       }
+      if (token !== loadToken) return; // a newer load superseded this one
+      bars = next;
+      barsKey = selectionKey(config.selection);
     } catch (e) {
+      if (token !== loadToken) return;
       errorMsg = `${e}`;
     } finally {
-      loading = false;
+      if (token === loadToken) loading = false;
     }
   }
 
-  async function loadChain() {
-    if (config.selection.kind !== "option" || !config.selection.expiry) {
+  async function loadChain(token: number) {
+    if (!config.selection || config.selection.kind !== "option" || !config.selection.expiry) {
       chainRows = [];
       return;
     }
     loading = true;
     errorMsg = "";
     try {
-      chainRows = await getOptionChain(config.selection.symbol, config.selection.expiry);
+      const next = await getOptionChain(config.selection.symbol, config.selection.expiry);
+      if (token !== loadToken) return;
+      chainRows = next;
     } catch (e) {
+      if (token !== loadToken) return;
       errorMsg = `${e}`;
     } finally {
-      loading = false;
+      if (token === loadToken) loading = false;
     }
   }
 
   function load() {
+    // Any pending fetch from the previous selection is now stale, and so
+    // is `bars`/`chainRows` until the new fetch resolves — invalidate the
+    // key immediately so a tick that arrives mid-fetch can't patch data
+    // belonging to the old selection.
+    const token = ++loadToken;
+    barsKey = null;
     if (config.view === "chart") {
-      void loadChart();
-    } else if (config.selection.kind === "option") {
-      void loadChain();
+      void loadChart(token);
+    } else if (config.selection?.kind === "option") {
+      void loadChain(token);
     } else {
       loading = false;
+    }
+  }
+
+  /** Tracks which selection `bars` currently belongs to, so a tick that
+   * arrives while a fetch for a *different* selection is in flight can't
+   * patch onto data it doesn't match (see `loadToken` above for the fetch
+   * side of the same race). */
+  let barsKey = $state<string | null>(null);
+
+  function selectionKey(sel: typeof config.selection): string | null {
+    if (!sel) return null;
+    return sel.kind === "index"
+      ? `index:${sel.symbol}`
+      : `option:${sel.symbol}:${sel.expiry}:${sel.strike}:${sel.leg}`;
+  }
+
+  /** Live-patch the in-progress last bar's OHLC from a tick, rather than
+   * re-fetching the whole series. The 1m aggregation job (server-side)
+   * still periodically finalizes bars; this just keeps the visible bar
+   * moving in between those rollups. No-ops if `bars` is empty (initial
+   * fetch hasn't landed yet) or the tick doesn't match this widget's
+   * current selection. */
+  function patchLastBar(price: number) {
+    if (bars.length === 0) return;
+    if (barsKey !== selectionKey(config.selection)) return;
+    const last = bars[bars.length - 1] as OhlcBar | OptionLegBar;
+    const updated = {
+      ...last,
+      close: price,
+      high: Math.max(last.high, price),
+      low: Math.min(last.low, price),
+    };
+    bars = [...bars.slice(0, -1), updated];
+  }
+
+  function handleIndexTick(tick: IndexTick) {
+    if (config.view !== "chart" || config.selection?.kind !== "index") return;
+    if (tick.index_name !== config.selection.symbol) return;
+    patchLastBar(tick.current_price);
+  }
+
+  function handleOptionTick(tick: OptionTick) {
+    if (!config.selection || config.selection.kind !== "option") return;
+    if (tick.symbol !== config.selection.symbol || tick.expiry !== config.selection.expiry) return;
+
+    if (config.view === "chart") {
+      if (tick.strike_price !== config.selection.strike) return;
+      const price = config.selection.leg === "CE" ? tick.ce_last_price : tick.pe_last_price;
+      if (price != null) patchLastBar(price);
+    } else {
+      // List view: patch the matching strike row in the option chain
+      // in place instead of refetching the whole chain on every tick.
+      const idx = chainRows.findIndex((r) => r.strike_price === tick.strike_price);
+      if (idx === -1) return;
+      const row = chainRows[idx];
+      const updated: OptionChainRow = {
+        ...row,
+        ce_close: tick.ce_last_price ?? row.ce_close,
+        ce_volume: tick.ce_volume ?? row.ce_volume,
+        ce_oi_close: tick.ce_oi ?? row.ce_oi_close,
+        pe_close: tick.pe_last_price ?? row.pe_close,
+        pe_volume: tick.pe_volume ?? row.pe_volume,
+        pe_oi_close: tick.pe_oi ?? row.pe_oi_close,
+      };
+      chainRows = chainRows.map((r, i) => (i === idx ? updated : r));
     }
   }
 
@@ -80,9 +173,17 @@
     void config.selection;
     void config.interval;
     load();
+  });
 
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
+  $effect(() => {
+    let unlistenIndex: (() => void) | undefined;
+    let unlistenOption: (() => void) | undefined;
+    onIndexTick(handleIndexTick).then((fn) => (unlistenIndex = fn));
+    onOptionTick(handleOptionTick).then((fn) => (unlistenOption = fn));
+    return () => {
+      unlistenIndex?.();
+      unlistenOption?.();
+    };
   });
 
   const lastBar = $derived(bars.at(-1) as { close: number } | undefined);
@@ -95,9 +196,11 @@
   });
 
   const titleText = $derived(
-    config.selection.kind === "index"
-      ? config.selection.symbol
-      : `${config.selection.symbol} ${config.selection.strike || ""} ${config.selection.leg}`.trim()
+    !config.selection
+      ? "—"
+      : config.selection.kind === "index"
+        ? config.selection.symbol
+        : `${config.selection.symbol} ${config.selection.strike || ""} ${config.selection.leg}`.trim()
   );
 
   function toggleView() {
@@ -108,7 +211,7 @@
 <div class="widget card">
   <div class="widget-header">
     <div class="widget-title">
-      <span class="slot-label">{slotLabel}</span>
+      <!-- <span class="slot-label">{slotLabel}</span> -->
       <strong>{titleText}</strong>
       {#if config.view === "chart" && lastBar}
         <span class="price">{lastBar.close.toFixed(2)}</span>
@@ -141,7 +244,7 @@
       <p class="error-banner">{errorMsg}</p>
     {:else if config.view === "chart"}
       <Chart bars={bars as OhlcBar[]} />
-    {:else if config.selection.kind === "option"}
+    {:else if config.selection?.kind === "option"}
       <OptionChainTable
         rows={chainRows}
         nearestStrike={config.selection.strike || chainRows[Math.floor(chainRows.length / 2)]?.strike_price}
@@ -163,6 +266,8 @@
     flex-direction: column;
     gap: var(--space-2);
     height: 100%;
+    min-width: 0;
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -181,13 +286,13 @@
     overflow: hidden;
   }
 
-  .slot-label {
+  /* .slot-label {
     font-size: 0.7rem;
     color: var(--color-text-muted);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     padding: 0 0.35em;
-  }
+  } */
 
   .price {
     font-family: var(--font-mono);
@@ -207,6 +312,8 @@
 
   .widget-body {
     flex: 1;
+    min-width: 0;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;

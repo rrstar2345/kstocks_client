@@ -111,6 +111,16 @@ pub async fn list_option_symbols(pool: &SqlitePool) -> Result<Vec<String>> {
     rows.iter().map(|r| Ok(r.try_get::<String, _>("symbol")?)).collect()
 }
 
+/// Distinct index names with live tick data available locally (from
+/// `index_ticks`, so it reflects what's actually being streamed) — powers
+/// the index picker in `SelectionPicker` instead of a hardcoded list.
+pub async fn list_index_symbols(pool: &SqlitePool) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT DISTINCT index_name FROM index_ticks ORDER BY index_name")
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(|r| Ok(r.try_get::<String, _>("index_name")?)).collect()
+}
+
 /// Distinct expiries available locally for a given symbol, nearest first.
 pub async fn list_option_expiries(pool: &SqlitePool, symbol: &str) -> Result<Vec<String>> {
     let rows = sqlx::query(

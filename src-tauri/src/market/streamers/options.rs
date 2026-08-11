@@ -2,9 +2,11 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use futures::stream::StreamExt;
 use serde::Deserialize;
+use tauri::AppHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
+use crate::market::events;
 use crate::market::market_clock::{SessionMode, SharedSessionState};
 use crate::settings::AppConfig;
 use crate::stats::{ConnState, SharedStats};
@@ -74,6 +76,7 @@ pub async fn run(
     tx: OptionTickSender,
     stats: SharedStats,
     session: SharedSessionState,
+    app: AppHandle,
 ) {
     let stream_key = format!("options:{}:{}", symbol, expiry);
 
@@ -93,7 +96,7 @@ pub async fn run(
                     stat.state = ConnState::Connecting;
                 }
 
-                match stream_active(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session).await {
+                match stream_active(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session, &app).await {
                     Ok(_) => info!("Options stream [{}] closed gracefully", stream_key),
                     Err(e) => {
                         warn!("Options stream [{}] error: {}", stream_key, e);
@@ -125,7 +128,7 @@ pub async fn run(
                 }
 
                 if let Err(e) =
-                    poll_once(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session).await
+                    poll_once(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session, &app).await
                 {
                     debug!("Options idle poll [{}] error (expected outside market hours): {}", stream_key, e);
                 }
@@ -165,6 +168,7 @@ async fn handle_message(
     stats: &SharedStats,
     stream_key: &str,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<bool> {
     let parsed: OptionChainMessage = match serde_json::from_str(text) {
         Ok(m) => m,
@@ -212,6 +216,8 @@ async fn handle_message(
 
     session.record_activity().await;
 
+    events::emit_option_tick(app, &row);
+
     if tx.send(row).await.is_err() {
         return Err(anyhow!("DB writer channel closed"));
     }
@@ -229,6 +235,7 @@ async fn stream_active(
     stats: &SharedStats,
     stream_key: &str,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<()> {
     let url = build_ws_url(config, symbol, expiry);
     info!("Connecting options stream [{}] -> {} (active mode)", stream_key, url);
@@ -261,7 +268,7 @@ async fn stream_active(
 
         match msg_result {
             Ok(Message::Text(text)) => {
-                handle_message(&text, symbol, tx, stats, stream_key, session).await?;
+                handle_message(&text, symbol, tx, stats, stream_key, session, app).await?;
             }
             Ok(Message::Close(_)) => {
                 info!("Options WebSocket [{}] closed by server", stream_key);
@@ -289,6 +296,7 @@ async fn poll_once(
     stats: &SharedStats,
     stream_key: &str,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<()> {
     let url = build_ws_url(config, symbol, expiry);
 
@@ -310,7 +318,7 @@ async fn poll_once(
 
         match tokio::time::timeout(remaining, read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
-                handle_message(&text, symbol, tx, stats, stream_key, session).await?;
+                handle_message(&text, symbol, tx, stats, stream_key, session, app).await?;
                 if session.mode().await == SessionMode::Active {
                     break;
                 }

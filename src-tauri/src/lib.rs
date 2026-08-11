@@ -34,6 +34,7 @@ pub fn run() {
             // wired — DB, streamers, aggregation, retention, backfill —
             // before any Tauri command fires. Mirrors kstocks-server's
             // main.rs wiring order.
+            let app_handle = app.handle().clone();
             let (db, stats, session) = tauri::async_runtime::block_on(async {
                 let db = storage::init_pool(&config.database)
                     .await
@@ -96,6 +97,7 @@ pub fn run() {
                             index_tx.clone(),
                             stats.clone(),
                             session.clone(),
+                            app_handle.clone(),
                         ));
 
                         // Up to 5 option streamers (one per resolved F&O symbol).
@@ -107,6 +109,7 @@ pub fn run() {
                                 option_tx.clone(),
                                 stats.clone(),
                                 session.clone(),
+                                app_handle.clone(),
                             ));
                         }
                     }
@@ -123,6 +126,7 @@ pub fn run() {
                             index_tx.clone(),
                             stats.clone(),
                             session.clone(),
+                            app_handle.clone(),
                         ));
                     }
                 }
@@ -185,6 +189,7 @@ pub fn run() {
             commands::market_data::get_recent_index_bars,
             commands::market_data::get_recent_option_bars,
             commands::market_data::list_option_symbols,
+            commands::market_data::list_index_symbols,
             commands::market_data::list_option_expiries,
             commands::market_data::list_option_strikes,
             commands::market_data::get_option_chain,

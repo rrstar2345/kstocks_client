@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getAllIndexSnapshots } from "$lib/api/tauri";
-  import type { IndexSnapshot } from "$lib/types";
+  import { onIndexTick } from "$lib/api/events";
+  import type { IndexSnapshot, IndexTick } from "$lib/types";
   import RangeBar from "./RangeBar.svelte";
 
   let snapshots = $state<IndexSnapshot[]>([]);
-
-  const POLL_MS = 5_000;
 
   async function load() {
     try {
@@ -16,10 +15,34 @@
     }
   }
 
+  function applyTick(tick: IndexTick) {
+    const next: IndexSnapshot = {
+      index_name: tick.index_name,
+      current_price: tick.current_price,
+      change: tick.change,
+      per_change: tick.per_change,
+      open: tick.open,
+      low: tick.low,
+      high: tick.high,
+      previous_close: tick.previous_close,
+      time: tick.time,
+    };
+
+    const idx = snapshots.findIndex((s) => s.index_name === tick.index_name);
+    if (idx === -1) {
+      snapshots = [...snapshots, next];
+    } else {
+      snapshots = snapshots.map((s, i) => (i === idx ? next : s));
+    }
+  }
+
   onMount(() => {
     load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
+
+    let unlisten: (() => void) | undefined;
+    onIndexTick(applyTick).then((fn) => (unlisten = fn));
+
+    return () => unlisten?.();
   });
 </script>
 

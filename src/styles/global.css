@@ -74,6 +74,28 @@ select {
   background-color: var(--color-bg-elevated);
   color: var(--color-text);
   padding: 0.5em 0.75em;
+  /* Tells the browser/webview which palette to use for UI it renders
+     itself (native dropdown popups, scrollbars, etc.) that our CSS can't
+     reach directly. Without this the <option> popup ignores our
+     `color: var(--color-text)` above and falls back to its OS-default
+     (light) background, so dark-mode text becomes unreadable. */
+  color-scheme: light dark;
+}
+
+[data-theme="dark"] select {
+  color-scheme: dark;
+}
+
+[data-theme="light"] select {
+  color-scheme: light;
+}
+
+/* Belt-and-braces: also style <option> explicitly for browsers/webviews
+   that do respect it, so the dropdown popup itself (not just the closed
+   <select>) matches the theme. */
+select option {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text);
 }
 
 input:focus,

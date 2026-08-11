@@ -7,6 +7,7 @@
 //! were renamed on the client side to avoid clashing with `ServerConfig`
 //! (the kstocks-server API client's own config struct). See PROGRESS.md.
 
+pub mod events;
 pub mod http;
 pub mod market_clock;
 pub mod streamers;

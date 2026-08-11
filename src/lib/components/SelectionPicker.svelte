@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listOptionExpiries, listOptionStrikes, listOptionSymbols } from "$lib/api/tauri";
+  import { listIndexSymbols, listOptionExpiries, listOptionStrikes, listOptionSymbols } from "$lib/api/tauri";
+  import { onIndexTick } from "$lib/api/events";
   import type { ChartInterval, InstrumentSelection, OptionLeg } from "$lib/types";
-
-  const KNOWN_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"];
 
   let {
     selection,
@@ -17,18 +16,40 @@
     onchange: (next: { selection: InstrumentSelection; interval?: ChartInterval }) => void;
   } = $props();
 
+  let indexSymbols = $state<string[]>([]);
   let optionSymbols = $state<string[]>([]);
   let expiries = $state<string[]>([]);
   let strikes = $state<number[]>([]);
 
-  const mode = $derived(selection.kind);
+  const mode = $derived(selection?.kind ?? "index");
 
-  onMount(async () => {
-    try {
-      optionSymbols = await listOptionSymbols();
-    } catch {
-      optionSymbols = [];
-    }
+  onMount(() => {
+    let unlistenIndexTick: (() => void) | undefined;
+
+    (async () => {
+      try {
+        indexSymbols = await listIndexSymbols();
+      } catch {
+        indexSymbols = [];
+      }
+      try {
+        optionSymbols = await listOptionSymbols();
+      } catch {
+        optionSymbols = [];
+      }
+
+      // A new index can start streaming after this widget mounted (e.g.
+      // the symbol list was empty at startup before the first ticks
+      // arrived). Grow the picker's options live instead of requiring a
+      // reload.
+      unlistenIndexTick = await onIndexTick((tick) => {
+        if (!indexSymbols.includes(tick.index_name)) {
+          indexSymbols = [...indexSymbols, tick.index_name].sort();
+        }
+      });
+    })();
+
+    return () => unlistenIndexTick?.();
   });
 
   async function loadExpiries(symbol: string) {
@@ -48,20 +69,21 @@
   }
 
   $effect(() => {
-    if (selection.kind === "option") {
+    if (selection?.kind === "option") {
       loadExpiries(selection.symbol);
     }
   });
 
   $effect(() => {
-    if (selection.kind === "option" && selection.expiry) {
+    if (selection?.kind === "option" && selection.expiry) {
       loadStrikes(selection.symbol, selection.expiry);
     }
   });
 
   function switchMode(next: "index" | "option") {
     if (next === "index") {
-      onchange({ selection: { kind: "index", symbol: "NIFTY" }, interval });
+      const symbol = indexSymbols[0] ?? "NIFTY";
+      onchange({ selection: { kind: "index", symbol }, interval });
     } else {
       const symbol = optionSymbols[0] ?? "NIFTY";
       onchange({
@@ -76,7 +98,7 @@
   }
 
   function updateOptionField(patch: Partial<{ symbol: string; expiry: string; strike: number; leg: OptionLeg }>) {
-    if (selection.kind !== "option") return;
+    if (selection?.kind !== "option") return;
     onchange({ selection: { ...selection, ...patch, kind: "option" }, interval });
   }
 </script>
@@ -87,9 +109,12 @@
     <option value="option">Option chain</option>
   </select>
 
-  {#if selection.kind === "index"}
-    <select value={selection.symbol} onchange={(e) => updateIndexSymbol(e.currentTarget.value)}>
-      {#each KNOWN_INDICES as s (s)}
+  {#if !selection || selection.kind === "index"}
+    <select value={selection?.symbol ?? "NIFTY"} onchange={(e) => updateIndexSymbol(e.currentTarget.value)}>
+      {#if selection?.symbol && !indexSymbols.includes(selection.symbol)}
+        <option value={selection.symbol}>{selection.symbol}</option>
+      {/if}
+      {#each indexSymbols as s (s)}
         <option value={s}>{s}</option>
       {/each}
     </select>

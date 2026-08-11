@@ -39,7 +39,7 @@
 </script>
 
 <div class="grid-toolbar">
-  <h2>Workspace</h2>
+  <span><h2>Workspace</h2></span>
   <button class="primary" onclick={() => addWidget()} disabled={!widgetsStore.canAdd}>
     + Add widget ({widgetsStore.list.length}/{MAX_WIDGETS})
   </button>

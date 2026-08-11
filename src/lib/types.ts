@@ -120,3 +120,43 @@ export type ChartWidgetConfig = {
 };
 
 export type TradingMode = "paper" | "live";
+
+/** Live tick pushed over the `index-tick` Tauri event, mirrors
+ * src-tauri/src/storage/ticks.rs::IndexTickRow exactly (Serialize'd as-is). */
+export type IndexTick = {
+  time: string;
+  index_name: string;
+  current_price: number;
+  change: number;
+  per_change: number;
+  previous_close: number;
+  open: number;
+  low: number;
+  high: number;
+  ind_status: string;
+  mkt_status: string;
+  dissemination_time: string;
+};
+
+/** Live tick pushed over the `option-tick` Tauri event, mirrors
+ * src-tauri/src/storage/ticks.rs::OptionTickRow exactly (Serialize'd as-is). */
+export type OptionTick = {
+  time: string;
+  symbol: string;
+  expiry: string;
+  strike_price: number;
+
+  ce_last_price: number | null;
+  ce_change: number | null;
+  ce_volume: number | null;
+  ce_oi: number | null;
+  ce_bid: number | null;
+  ce_ask: number | null;
+
+  pe_last_price: number | null;
+  pe_change: number | null;
+  pe_volume: number | null;
+  pe_oi: number | null;
+  pe_bid: number | null;
+  pe_ask: number | null;
+};

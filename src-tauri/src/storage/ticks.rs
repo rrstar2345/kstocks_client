@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
 use sqlx::QueryBuilder;
 use std::time::Duration;
@@ -18,7 +19,10 @@ use crate::stats::SharedStats;
 // ROW TYPES
 // ============================================================================
 
-#[derive(Debug, Clone)]
+/// Also emitted verbatim to the frontend as the `index-tick` Tauri event
+/// (see `market::events`), so the field names/case here are part of that
+/// wire contract, not just the DB schema.
+#[derive(Debug, Clone, Serialize)]
 pub struct IndexTickRow {
     pub time: DateTime<Utc>,
     pub index_name: String,
@@ -34,7 +38,10 @@ pub struct IndexTickRow {
     pub dissemination_time: String,
 }
 
-#[derive(Debug, Clone)]
+/// Also emitted verbatim to the frontend as the `option-tick` Tauri event
+/// (see `market::events`) — field names here are part of that wire
+/// contract too.
+#[derive(Debug, Clone, Serialize)]
 pub struct OptionTickRow {
     pub time: DateTime<Utc>,
     pub symbol: String,

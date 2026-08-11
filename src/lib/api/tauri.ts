@@ -92,6 +92,12 @@ export function listOptionSymbols(): Promise<string[]> {
   return invoke("list_option_symbols");
 }
 
+/** Distinct index names with local data available — powers the index
+ * picker in `SelectionPicker` (see market_data::list_index_symbols). */
+export function listIndexSymbols(): Promise<string[]> {
+  return invoke("list_index_symbols");
+}
+
 export function listOptionExpiries(symbol: string): Promise<string[]> {
   return invoke("list_option_expiries", { symbol });
 }

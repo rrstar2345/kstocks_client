@@ -46,6 +46,13 @@ pub async fn list_option_symbols(state: State<'_, AppState>) -> Result<Vec<Strin
     ohlc::list_option_symbols(&state.db).await.map_err(|e| e.to_string())
 }
 
+/// Distinct index symbols with local data available (populates the index
+/// picker in `SelectionPicker` — previously a hardcoded frontend list).
+#[tauri::command]
+pub async fn list_index_symbols(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    ohlc::list_index_symbols(&state.db).await.map_err(|e| e.to_string())
+}
+
 /// Distinct expiries for a symbol, nearest first.
 #[tauri::command]
 pub async fn list_option_expiries(state: State<'_, AppState>, symbol: String) -> Result<Vec<String>, String> {

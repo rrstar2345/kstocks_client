@@ -1,101 +1,123 @@
 <script lang="ts">
-  // Minimal dependency-free candlestick chart, drawn on a <canvas>. No
-  // charting library required — keeps the widget grid light. Redraws
-  // whenever `bars` changes or the container resizes.
+  // Candlestick chart built on lightweight-charts (TradingView's open-source
+  // charting library): gives us axes, crosshair/tooltip, pan/zoom, and a
+  // real API surface for adding indicator overlays later, instead of the
+  // old hand-rolled <canvas> renderer.
+  import { onMount } from "svelte";
+  import {
+    createChart,
+    CandlestickSeries,
+    type IChartApi,
+    type ISeriesApi,
+    type UTCTimestamp,
+  } from "lightweight-charts";
   import type { OhlcBar } from "$lib/types";
 
-  let { bars, height = 220 }: { bars: OhlcBar[]; height?: number } = $props();
+  let { bars, height = 320 }: { bars: OhlcBar[]; height?: number } = $props();
 
-  let canvasEl: HTMLCanvasElement;
   let containerEl: HTMLDivElement;
+  let chart: IChartApi | undefined;
+  let series: ISeriesApi<"Candlestick"> | undefined;
 
   function readColor(varName: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
   }
 
-  function draw() {
-    if (!canvasEl || !containerEl) return;
-    const dpr = window.devicePixelRatio || 1;
-    const width = containerEl.clientWidth;
+  function toUtcTimestamp(bucketStart: string): UTCTimestamp {
+    return (Date.parse(bucketStart) / 1000) as UTCTimestamp;
+  }
 
-    canvasEl.width = width * dpr;
-    canvasEl.height = height * dpr;
-    canvasEl.style.width = `${width}px`;
-    canvasEl.style.height = `${height}px`;
+  function applyTheme() {
+    if (!chart || !series) return;
+    const text = readColor("--color-text-muted");
+    const border = readColor("--color-border");
+    const positive = readColor("--color-positive");
+    const negative = readColor("--color-negative");
 
-    const ctx = canvasEl.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, width, height);
+    chart.applyOptions({
+      layout: {
+        background: { color: "transparent" },
+        textColor: text,
+      },
+      grid: {
+        vertLines: { color: border },
+        horzLines: { color: border },
+      },
+      timeScale: { borderColor: border },
+      rightPriceScale: { borderColor: border },
+    });
 
-    if (bars.length === 0) {
-      ctx.fillStyle = readColor("--color-text-muted");
-      ctx.font = "13px var(--font-sans)";
-      ctx.fillText("No data yet", 12, height / 2);
-      return;
-    }
-
-    const padding = { top: 10, bottom: 10, left: 4, right: 4 };
-    const plotW = width - padding.left - padding.right;
-    const plotH = height - padding.top - padding.bottom;
-
-    const highs = bars.map((b) => b.high);
-    const lows = bars.map((b) => b.low);
-    const max = Math.max(...highs);
-    const min = Math.min(...lows);
-    const range = max - min || 1;
-
-    const yFor = (price: number) => padding.top + plotH * (1 - (price - min) / range);
-    const slot = plotW / bars.length;
-    const candleW = Math.max(1, Math.min(10, slot * 0.6));
-
-    const positiveColor = readColor("--color-positive");
-    const negativeColor = readColor("--color-negative");
-
-    bars.forEach((bar, i) => {
-      const x = padding.left + i * slot + slot / 2;
-      const isUp = bar.close >= bar.open;
-      ctx.strokeStyle = isUp ? positiveColor : negativeColor;
-      ctx.fillStyle = isUp ? positiveColor : negativeColor;
-
-      // wick
-      ctx.beginPath();
-      ctx.moveTo(x, yFor(bar.high));
-      ctx.lineTo(x, yFor(bar.low));
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // body
-      const bodyTop = yFor(Math.max(bar.open, bar.close));
-      const bodyBottom = yFor(Math.min(bar.open, bar.close));
-      const bodyH = Math.max(1, bodyBottom - bodyTop);
-      ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyH);
+    series.applyOptions({
+      upColor: positive,
+      downColor: negative,
+      borderUpColor: positive,
+      borderDownColor: negative,
+      wickUpColor: positive,
+      wickDownColor: negative,
     });
   }
 
-  $effect(() => {
-    // Re-run whenever `bars` (or theme, via CSS vars) changes.
-    void bars;
-    draw();
+  function setData() {
+    if (!series) return;
+
+    // Defensive dedupe/sort: lightweight-charts throws if points aren't
+    // strictly ascending by time. Bars should already come sorted and
+    // unique from the backend, but two bars can legitimately collapse to
+    // the same second here if `bucket_start` values are ever
+    // sub-minute-precision (or duplicated across a fetch/tick race) — keep
+    // the later value for any duplicate timestamp rather than crashing.
+    const byTime = new Map<UTCTimestamp, { time: UTCTimestamp; open: number; high: number; low: number; close: number }>();
+    for (const b of bars) {
+      const time = toUtcTimestamp(b.bucket_start);
+      byTime.set(time, { time, open: b.open, high: b.high, low: b.low, close: b.close });
+    }
+    const points = [...byTime.values()].sort((a, b) => a.time - b.time);
+
+    series.setData(points);
+  }
+
+  onMount(() => {
+    chart = createChart(containerEl, {
+      height,
+      autoSize: false,
+      timeScale: { timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 0 },
+    });
+    series = chart.addSeries(CandlestickSeries);
+
+    applyTheme();
+    setData();
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width && chart) chart.applyOptions({ width });
+    });
+    resizeObserver.observe(containerEl);
+
+    // Theme toggling flips `data-theme` on <html>; re-read CSS vars when
+    // that happens so the chart follows light/dark switches live.
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+    return () => {
+      resizeObserver.disconnect();
+      themeObserver.disconnect();
+      chart?.remove();
+    };
   });
 
   $effect(() => {
-    if (!containerEl) return;
-    const observer = new ResizeObserver(() => draw());
-    observer.observe(containerEl);
-    return () => observer.disconnect();
+    void bars;
+    setData();
   });
 </script>
 
-<div class="chart-container" bind:this={containerEl}>
-  <canvas bind:this={canvasEl}></canvas>
-</div>
+<div class="chart-container" bind:this={containerEl}></div>
 
 <style>
   .chart-container {
     width: 100%;
-  }
-  canvas {
-    display: block;
+    min-width: 0;
+    height: auto;
   }
 </style>

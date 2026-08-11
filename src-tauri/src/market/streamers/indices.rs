@@ -2,9 +2,11 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use futures::stream::StreamExt;
 use serde::Deserialize;
+use tauri::AppHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
+use crate::market::events;
 use crate::market::http;
 use crate::market::market_clock::{SessionMode, SharedSessionState};
 use crate::settings::AppConfig;
@@ -49,7 +51,13 @@ struct IndexStreamMessage {
 /// Run the indices streamer with automatic reconnect, alternating between
 /// Active (held-open connection) and Idle (hourly poll) modes based on
 /// `session`.
-pub async fn run(config: AppConfig, tx: IndexTickSender, stats: SharedStats, session: SharedSessionState) {
+pub async fn run(
+    config: AppConfig,
+    tx: IndexTickSender,
+    stats: SharedStats,
+    session: SharedSessionState,
+    app: AppHandle,
+) {
     {
         let mut s = stats.write().await;
         s.ensure_stream(STREAM_NAME);
@@ -66,7 +74,7 @@ pub async fn run(config: AppConfig, tx: IndexTickSender, stats: SharedStats, ses
                     stat.state = ConnState::Connecting;
                 }
 
-                match stream_active(&config, &tx, &stats, &session).await {
+                match stream_active(&config, &tx, &stats, &session, &app).await {
                     Ok(_) => info!("Indices stream closed gracefully"),
                     Err(e) => {
                         warn!("Indices stream error: {}", e);
@@ -97,7 +105,7 @@ pub async fn run(config: AppConfig, tx: IndexTickSender, stats: SharedStats, ses
                     stat.state = ConnState::Idle;
                 }
 
-                if let Err(e) = poll_once(&config, &tx, &stats, &session).await {
+                if let Err(e) = poll_once(&config, &tx, &stats, &session, &app).await {
                     debug!("Indices idle poll error (expected outside market hours): {}", e);
                 }
 
@@ -124,6 +132,7 @@ async fn handle_message(
     tx: &IndexTickSender,
     stats: &SharedStats,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<bool> {
     let msg = match serde_json::from_str::<IndexStreamMessage>(text) {
         Ok(m) => m,
@@ -162,6 +171,8 @@ async fn handle_message(
 
     session.record_activity().await;
 
+    events::emit_index_tick(app, &row);
+
     if tx.send(row).await.is_err() {
         return Err(anyhow!("DB writer channel closed"));
     }
@@ -176,6 +187,7 @@ async fn stream_active(
     tx: &IndexTickSender,
     stats: &SharedStats,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<()> {
     let url = config.system.indices_streamer.base.clone();
 
@@ -211,7 +223,7 @@ async fn stream_active(
 
         match msg_result {
             Ok(Message::Text(text)) => {
-                if let Err(e) = handle_message(&text, tx, stats, session).await {
+                if let Err(e) = handle_message(&text, tx, stats, session, app).await {
                     return Err(e);
                 }
             }
@@ -238,6 +250,7 @@ async fn poll_once(
     tx: &IndexTickSender,
     stats: &SharedStats,
     session: &SharedSessionState,
+    app: &AppHandle,
 ) -> Result<()> {
     let url = config.system.indices_streamer.base.clone();
 
@@ -259,7 +272,7 @@ async fn poll_once(
 
         match tokio::time::timeout(remaining, read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
-                let _ = handle_message(&text, tx, stats, session).await;
+                let _ = handle_message(&text, tx, stats, session, app).await;
                 if session.mode().await == SessionMode::Active {
                     // Real activity seen; hand back to the active loop.
                     break;
