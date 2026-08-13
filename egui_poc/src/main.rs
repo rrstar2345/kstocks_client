@@ -119,6 +119,18 @@ struct CandlestickApp {
     frame_times: Vec<f32>,
     last_frame_at: Instant,
     tick_count: u64,
+    /// Whether the view should keep auto-scrolling/auto-fitting to the
+    /// latest bars (like a "follow" mode). Turned off once the user pans
+    /// or zooms manually, so we don't fight their interaction; there's no
+    /// UI to turn it back on yet in this POC, but that's an easy follow-up
+    /// (e.g. a "jump to latest" button).
+    follow: bool,
+    /// Number of bars to keep visible in the window while following.
+    /// The x-range only grows to accommodate this many bars; once there
+    /// are more bars than this, the window slides right instead of
+    /// widening, which is what keeps bar width constant instead of
+    /// collapsing as history grows.
+    visible_bars: usize,
 }
 
 impl CandlestickApp {
@@ -135,6 +147,8 @@ impl CandlestickApp {
             frame_times: Vec::with_capacity(240),
             last_frame_at: now,
             tick_count: 0,
+            follow: true,
+            visible_bars: 60,
         }
     }
 }
@@ -252,6 +266,51 @@ impl eframe::App for CandlestickApp {
             .unwrap_or(true);
         let last_color = if is_last_up { up_color } else { down_color };
 
+        // --- compute a fixed-width window of bars instead of letting
+        // egui_plot auto-fit to the entire (unbounded, growing) history.
+        // Auto-fitting to all bars is what caused the reported bug: as
+        // more bars arrive the x-range keeps widening every frame, so
+        // each bar gets thinner and thinner ("collapsing"). Instead we
+        // show at most `visible_bars` bars, and only start scrolling the
+        // window right once there are more bars than fit; y bounds are
+        // then fit to only the bars inside that window, not the whole
+        // history, which also fixes the tick-value jumpiness since the
+        // range settles down instead of being dragged around by
+        // long-past highs/lows.
+        let bar_count = self.series.bars.len();
+        let window = self.visible_bars.max(1);
+        let (window_min_bucket, window_max_bucket) = if bar_count == 0 {
+            (0.0, window as f64)
+        } else {
+            let last_bucket = self.series.bars[bar_count - 1].bucket as f64;
+            let first_visible_bucket = self.series.bars[bar_count.saturating_sub(window)].bucket as f64;
+            if bar_count <= window {
+                // Not enough bars yet to fill the window: keep the window
+                // width fixed starting at the first bar, so bars don't
+                // stretch to fill the viewport before there's real data.
+                let first_bucket = self.series.bars[0].bucket as f64;
+                (first_bucket, first_bucket + window as f64)
+            } else {
+                (first_visible_bucket, last_bucket + 1.0)
+            }
+        };
+
+        // Y bounds: fit only to the bars currently inside the window,
+        // with a little padding so candle wicks aren't flush against the
+        // plot edge.
+        let visible_slice_start = bar_count.saturating_sub(window);
+        let (y_min, y_max) = {
+            let visible = &self.series.bars[visible_slice_start..];
+            if visible.is_empty() {
+                (0.0, 1.0)
+            } else {
+                let lo = visible.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+                let hi = visible.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+                let pad = ((hi - lo).max(0.01)) * 0.08;
+                (lo - pad, hi + pad)
+            }
+        };
+
         let plot_response = Plot::new("candlestick_plot")
             .height(ui.available_height() - 8.0)
             .show_grid(true)
@@ -260,7 +319,19 @@ impl eframe::App for CandlestickApp {
             // Price axis on the right, like TradingView.
             .y_axis_position(HPlacement::Right)
             .x_axis_formatter(|mark, _range| format!("{}s", mark.value as i64))
+            // Two decimal places for price ticks; without an explicit
+            // formatter egui_plot falls back to a generic numeric
+            // formatter whose precision/step doesn't line up with our
+            // price scale, which is what made the tick values look off.
+            .y_axis_formatter(|mark, _range| format!("{:.2}", mark.value))
             .show(ui, |plot_ui| {
+                if self.follow {
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [window_min_bucket, y_min],
+                        [window_max_bucket, y_max],
+                    ));
+                }
+
                 plot_ui.box_plot(box_plot);
 
                 // Dotted horizontal line at the last traded price,
@@ -278,6 +349,15 @@ impl eframe::App for CandlestickApp {
                     plot_ui.line(line);
                 }
             });
+
+        // If the user drags or scroll-zooms the plot, drop out of follow
+        // mode so we stop overriding their bounds every frame. (Re-enabling
+        // follow, e.g. via a "jump to latest" button, is left as a
+        // follow-up — out of scope for this POC.)
+        let resp = &plot_response.response;
+        if resp.dragged() || resp.hovered() && ui.input(|i| i.smooth_scroll_delta != egui::Vec2::ZERO) {
+            self.follow = false;
+        }
 
         // Price tag box at the right edge of the plot, at the last
         // traded price — painted in screen space using the transform
