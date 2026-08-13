@@ -4,6 +4,8 @@
   import { onIndexTick } from "$lib/api/events";
   import type { IndexSnapshot, IndexTick } from "$lib/types";
 
+  let { collapsed = $bindable(false) }: { collapsed?: boolean } = $props();
+
   let snapshots = $state<IndexSnapshot[]>([]);
   let loading = $state(true);
 
@@ -79,11 +81,20 @@
   }
 </script>
 
-<div class="watchlist card">
+<div class="watchlist card" class:collapsed>
   <div class="watchlist-header">
     <h2>Watchlist</h2>
+    <button
+      class="collapse-btn"
+      onclick={() => (collapsed = !collapsed)}
+      aria-label={collapsed ? "Expand watchlist" : "Collapse watchlist"}
+      title={collapsed ? "Expand watchlist" : "Collapse watchlist"}
+    >
+      {collapsed ? "»" : "«"}
+    </button>
   </div>
 
+  {#if !collapsed}
   {#if loading && snapshots.length === 0}
     <p class="muted pad">Loading…</p>
   {:else if snapshots.length === 0}
@@ -125,6 +136,7 @@
       {/each}
     </ul>
   {/if}
+  {/if}
 </div>
 
 <style>
@@ -133,11 +145,50 @@
     flex-direction: column;
     height: 100%;
     overflow: hidden;
+    transition: width 0.15s ease;
+  }
+
+  .watchlist.collapsed {
+    width: 100%;
   }
 
   .watchlist-header {
-    padding: var(--space-3) var(--space-4) 0px var(--space-4);
+    padding: var(--space-3) var(--space-4) var(--space-2) var(--space-4);
     border-bottom: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .watchlist.collapsed .watchlist-header {
+    flex-direction: column;
+    padding: var(--space-3) var(--space-2);
+  }
+
+  .watchlist.collapsed .watchlist-header h2 {
+    writing-mode: vertical-rl;
+    font-size: 0.85rem;
+  }
+
+  .watchlist-header h2 {
+    margin: 0;
+  }
+
+  .collapse-btn {
+    flex: none;
+    padding: 0.2em 0.5em;
+    line-height: 1;
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .collapse-btn:hover {
+    color: var(--color-text);
   }
 
   .pad {

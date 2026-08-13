@@ -7,11 +7,13 @@
   // users see live NSE data streamed directly by this client; registered
   // users additionally benefit from server-side backfill running quietly
   // in the background (see src-tauri lib.rs setup + storage/backfill.rs).
+
+  let watchlistCollapsed = $state(false);
 </script>
 
-<div class="home-layout">
+<div class="home-layout" class:watchlist-collapsed={watchlistCollapsed}>
   <section class="pane watchlist-pane">
-    <Watchlist />
+    <Watchlist bind:collapsed={watchlistCollapsed} />
   </section>
 
   <section class="pane workspace-pane">
@@ -30,6 +32,11 @@
     gap: var(--space-4);
     height: calc(100vh - 130px);
     min-height: 480px;
+    transition: grid-template-columns 0.15s ease;
+  }
+
+  .home-layout.watchlist-collapsed {
+    grid-template-columns: 44px minmax(0, 1fr) 300px;
   }
 
   .pane {
@@ -58,6 +65,10 @@
     .watchlist-pane,
     .order-pane {
       height: 320px;
+    }
+
+    .home-layout.watchlist-collapsed .watchlist-pane {
+      height: 44px;
     }
 
     .workspace-pane {

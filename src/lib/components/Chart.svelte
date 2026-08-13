@@ -27,6 +27,42 @@
     return (Date.parse(bucketStart) / 1000) as UTCTimestamp;
   }
 
+  // `bucket_start` from the backend is a genuine UTC instant (see
+  // src-tauri/src/storage/ohlc.rs: bars are floored from `Utc::now()`
+  // tick-arrival timestamps and stringified with a trailing `Z`), so
+  // `toUtcTimestamp` above is correct as-is — no manual IST shift needed
+  // there. What *was* wrong is display: lightweight-charts renders axis/
+  // crosshair labels using the *browser's* local timezone by default. On
+  // any machine not set to IST, that silently relabels NSE bars into the
+  // viewer's local time instead of the market's actual IST wall-clock
+  // time. Since NSE market hours and trader expectations are IST, format
+  // every label as fixed UTC+5:30 explicitly rather than relying on
+  // (or fighting) the browser's local offset.
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+  function toIstDate(unixSeconds: number): Date {
+    // A Date whose UTC getters read back IST wall-clock fields, by
+    // shifting the instant forward by the fixed IST offset before
+    // handing it to Date. This avoids any dependence on the host's
+    // configured timezone/locale.
+    return new Date(unixSeconds * 1000 + IST_OFFSET_MS);
+  }
+
+  function pad2(n: number): string {
+    return n < 10 ? `0${n}` : `${n}`;
+  }
+
+  function formatIstTime(unixSeconds: number): string {
+    const d = toIstDate(unixSeconds);
+    return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+  }
+
+  function formatIstDate(unixSeconds: number): string {
+    const d = toIstDate(unixSeconds);
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${d.getUTCDate()} ${months[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(-2)}`;
+  }
+
   function applyTheme() {
     if (!chart || !series) return;
     const text = readColor("--color-text-muted");
@@ -74,19 +110,42 @@
     const points = [...byTime.values()].sort((a, b) => a.time - b.time);
 
     series.setData(points);
+    chart?.timeScale().fitContent();
   }
 
   onMount(() => {
+    // Measure synchronously at creation time instead of waiting for the
+    // first ResizeObserver callback — otherwise the chart is created at
+    // its default (often 0) width, which can leave the time axis with no
+    // room to lay out any tick labels until the first resize fires.
+    const initialWidth = containerEl.clientWidth || undefined;
+
     chart = createChart(containerEl, {
       height,
+      width: initialWidth,
       autoSize: false,
-      timeScale: { timeVisible: true, secondsVisible: false },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderVisible: true,
+        // Labels are formatted explicitly in fixed IST (UTC+5:30) below,
+        // independent of the viewer's machine/browser timezone — see the
+        // comment above `IST_OFFSET_MS`.
+        tickMarkFormatter: (time: UTCTimestamp) => formatIstTime(time as number),
+      },
+      localization: {
+        timeFormatter: (time: UTCTimestamp) => {
+          const t = time as number;
+          return `${formatIstDate(t)} ${formatIstTime(t)} IST`;
+        },
+      },
       crosshair: { mode: 0 },
     });
     series = chart.addSeries(CandlestickSeries);
 
     applyTheme();
     setData();
+    chart.timeScale().fitContent();
 
     const resizeObserver = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
@@ -118,6 +177,7 @@
   .chart-container {
     width: 100%;
     min-width: 0;
-    height: auto;
+    flex: 1;
+    min-height: 0;
   }
 </style>

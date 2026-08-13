@@ -1,5 +1,26 @@
 # kstocks_client — Project Progress
 
+## Latest session updates (most recent first)
+
+### Session: Chart engine, real-time transport, select-box staleness, watchlist collapse, chart x-axis/timezone
+
+**Status: Implemented — unverified**
+
+1. **Chart engine replaced with lightweight-charts.** `src/lib/components/Chart.svelte` now renders candlesticks via TradingView's open-source `lightweight-charts` library instead of the old hand-written `<canvas>` renderer. This gives real axes, crosshair/tooltip, pan/zoom, and an API surface for future indicator overlays.
+2. **Real-time data via WSS instead of polling.** Widgets and the watchlist now receive live prices through Tauri events (`index-tick`, `option-tick`, see `src/lib/api/events.ts`) fed by the Rust-side WSS market-data streamers, replacing the previous 5-second polling loop. `Widget.svelte` patches the in-progress last bar directly from ticks; `Watchlist.svelte` updates snapshots in place from the same event stream.
+3. **Fixed stale/inconsistent select-box values (`SelectionPicker.svelte`).** Previously, index/option symbol, expiry, and strike lists were fetched only once per mount or once per symbol/expiry change via `$effect`, so newly available expiries/strikes (or symbols that only started streaming after mount) wouldn't show up until the user changed a *different* field to re-trigger the effect — and each `SelectionPicker` instance refreshed independently, so one widget could show fresh values while a sibling widget stayed stale. Fixed by:
+   - Adding a 5-second background refresh timer (`REFRESH_INTERVAL_MS`) that re-pulls whichever lists are relevant to the current selection, per picker instance, so every mounted picker converges independently instead of waiting on user interaction.
+   - Listening to `option-tick` events to opportunistically grow the `strikes` list live when a tick for the current symbol/expiry references a strike not yet in the list (mirrors the existing `index-tick` handling already used to grow `indexSymbols`).
+   - Merging (rather than overwriting) `indexSymbols` on refresh so a symbol added live by a tick isn't dropped by a backend list call that hasn't caught up yet.
+4. **Watchlist pane is now collapsible.** `Watchlist.svelte` takes a bindable `collapsed` prop with a toggle button in its header; `src/routes/home/+page.svelte` binds to it and shrinks the watchlist grid column to 44px (vertical label, no list body) when collapsed, with a matching collapsed height on the stacked/narrow layout.
+5. **Fixed missing chart x-axis and timezone handling (`Chart.svelte`).**
+   - The chart is now created with an explicit initial `width` (measured synchronously from the container at mount) instead of relying solely on the first `ResizeObserver` callback, and `chart.timeScale().fitContent()` is called after both initial creation and every `setData()`, so the time axis reliably has room and ticks to lay out labels immediately instead of only after a resize/interaction.
+   - `bucket_start` values from the backend are confirmed to already be genuine UTC instants (`Utc::now()` at tick-arrival time, floored to the minute, serialized with a trailing `Z` — see `src-tauri/src/storage/ohlc.rs`), so no additional timezone conversion is needed when parsing them into the chart's `UTCTimestamp`.
+   - The actual bug was **display-side**: lightweight-charts formats axis/crosshair labels using the browser's local timezone by default, which silently relabels NSE bars into the viewer machine's timezone instead of NSE's IST wall-clock time whenever the two differ. Fixed by supplying an explicit fixed-offset (UTC+5:30) `tickMarkFormatter` and `localization.timeFormatter`, so labels always read as true IST regardless of the host machine's configured timezone — with no double conversion, since the underlying instant was already correct UTC.
+
+---
+
+
 > **Purpose:** This document is the current source of truth for implementation status.
 >
 > **Status terminology**
