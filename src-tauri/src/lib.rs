@@ -1,10 +1,11 @@
-mod api;
-mod commands;
-mod market;
-mod settings;
-mod state;
-mod stats;
-mod storage;
+pub mod api;
+pub mod commands;
+pub mod gui;
+pub mod market;
+pub mod settings;
+pub mod state;
+pub mod stats;
+pub mod storage;
 
 use tauri::Manager;
 use tracing::{error, info, warn};
